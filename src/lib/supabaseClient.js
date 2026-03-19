@@ -1,9 +1,13 @@
-// src/lib/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
-import { get } from 'svelte/store';
 
-const supabaseUrl = get(import.meta.env.VITE_SUPABASE_URL);
-const supabaseKey = get(import.meta.env.VITE_SUPABASE_KEY);
+// If you are using a .env file, Vite/SvelteKit looks for these:
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error("❌ Supabase environment variables are MISSING! Check your .env file.");
+}
+
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: {
     params: {

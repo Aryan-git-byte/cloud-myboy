@@ -20,21 +20,25 @@ export class GBAEngine {
    * @param {string} romName 
    */
   async loadRom(romData, romName) {
-    this.onLog(`🕹️ Initializing mGBA...`);
+    this.onLog(`🕹️ Initializing mGBA Core...`);
     try {
       this.module = await mGBA({ canvas: this.canvas });
+      
+      // Initialize the virtual filesystem
       await this.module.FSInit();
 
       this.safeRomName = romName.replace(/[^a-zA-Z0-9]/g, '_');
-      const virtualPath = '/' + this.safeRomName + '.gba';
       
+      // We write the ROM to the root. mGBA usually creates saves in the same place.
+      const virtualPath = '/' + this.safeRomName + '.gba';
       this.module.FS.writeFile(virtualPath, romData);
       
-      // Check for existing save in memory if we are re-injecting
       const loadSuccess = this.module.loadGame(virtualPath);
       
       if (loadSuccess) {
         this.onLog("🚀 Game Booted!");
+        // Force Flash 128K Save Type (Required for Pokémon Emerald/Quetzal)
+        if (this.module.setSaveType) this.module.setSaveType(4); 
         if (this.module.resumeGame) this.module.resumeGame();
         this.isRunning = true;
       }
@@ -45,7 +49,7 @@ export class GBAEngine {
   }
 
   /**
-   * Rips the in-game save (.sav)
+   * Recursively scans the virtual filesystem for .sav files
    * @returns {Uint8Array | null}
    */
   exportBatterySave() {
@@ -54,57 +58,80 @@ export class GBAEngine {
     // Force mGBA to flush RAM to the virtual disk
     if (this.module.syncSave) this.module.syncSave();
 
-    const savePath = '/' + this.safeRomName + '.sav';
-    try {
-      // Check if file exists before reading to avoid crashing
-      const files = this.module.FS.readdir('/');
-      if (!files.includes(this.safeRomName + '.sav')) {
-        this.onLog("⚠️ No save file found yet. Save in the Pokemon menu first!");
-        return null;
-      }
-
-      const saveData = this.module.FS.readFile(savePath);
-      return saveData;
-    } catch (e) {
-      this.onLog("⚠️ Save data not accessible.");
+    const expectedName = this.safeRomName + '.sav';
+    
+    /**
+     * @param {string} dir
+     * @returns {string | null}
+     */
+    const findSavePath = (dir) => {
+      try {
+        const files = this.module.FS.readdir(dir);
+        for (const file of files) {
+          if (file === '.' || file === '..') continue;
+          const fullPath = dir === '/' ? `/${file}` : `${dir}/${file}`;
+          
+          if (file === expectedName) return fullPath;
+          
+          // If it's a directory, look inside
+          try {
+            const stat = this.module.FS.stat(fullPath);
+            if (this.module.FS.isDir(stat.mode)) {
+              const found = findSavePath(fullPath);
+              if (found) return found;
+            }
+          } catch (e) { /* skip */ }
+        }
+      } catch (e) { /* skip */ }
       return null;
+    };
+
+    const actualPath = findSavePath('/');
+
+    if (actualPath) {
+      try {
+        const data = this.module.FS.readFile(actualPath);
+        this.onLog(`✅ Save Found at: ${actualPath}`);
+        return data;
+      } catch (e) {
+        this.onLog("❌ Failed to read save file.");
+      }
+    } else {
+      this.onLog("⚠️ No .sav file found in any folder. Did you SAVE in the Pokemon game menu?");
     }
+    return null;
   }
 
   /** @param {Uint8Array} saveData */
   injectBatterySave(saveData) {
     if (!this.module) return;
-    const savePath = '/' + this.safeRomName + '.sav';
-    try {
-      this.module.FS.writeFile(savePath, saveData);
-      this.onLog("☁️ Cloud Save Injected.");
-    } catch (e) {
-      this.onLog("❌ Injection failed.");
-    }
+    // We inject it into the root, and mGBA will find it when the game loads
+    this.module.FS.writeFile('/' + this.safeRomName + '.sav', saveData);
+    this.onLog("☁️ Cloud Save Injected into root.");
   }
 
   /** @param {number} slot */
   saveState(slot = 0) {
-    if (this.module) this.module.saveState(slot);
+    if (this.module) {
+      this.module.saveState(slot);
+      this.onLog(`📸 State ${slot} Saved.`);
+    }
   }
 
   /** @param {number} slot */
   loadState(slot = 0) {
-    if (this.module) this.module.loadState(slot);
+    if (this.module) {
+      this.module.loadState(slot);
+      this.onLog(`⏪ State ${slot} Loaded.`);
+    }
   }
 
   toggleFastForward() {
     if (!this.module) return false;
     this.isFF = !this.isFF;
-    
-    if (this.isFF && this.module.fastForward) {
-      this.module.fastForward();
-      return true;
-    } else if (this.module.normalSpeed) {
-      this.module.normalSpeed();
-      return false;
-    }
-    return false;
+    if (this.isFF && this.module.fastForward) this.module.fastForward();
+    else if (this.module.normalSpeed) this.module.normalSpeed();
+    return this.isFF;
   }
 
   stop() {
